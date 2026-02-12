@@ -13,6 +13,7 @@ pool:
   vmImage: "ubuntu-latest"
 
 variables:
+  - group: devops-config
   - name: TF_VAR_aws_region
     value: "us-east-1"
   - name: TF_VAR_project_name
