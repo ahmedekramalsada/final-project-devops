@@ -1,73 +1,214 @@
+# Tools Pipeline - NGINX Ingress, ArgoCD, SonarQube
+# This pipeline deploys the tools infrastructure to EKS
+
 trigger:
-  paths:
-    include:
-      - terraform/tools/**
   branches:
     include:
       - main
+  paths:
+    include:
+      - terraform/tools/*
 
 pool:
-  vmImage: "ubuntu-latest"
+  vmImage: 'ubuntu-latest'
 
 variables:
-  - group: "devops-config"
+  - name: TF_VAR_project_name
+    value: 'devops-project'
+  - name: TF_VAR_environment
+    value: 'dev'
+  - name: TF_VAR_region
+    value: 'us-east-1'
+  # Replace with your actual S3 bucket name
+  - name: S3_BUCKET_NAME
+    value: 'backend-s3-final-project'
 
-parameters:
-  - name: action
-    displayName: "Action"
-    type: string
-    default: "apply"
-    values:
-      - apply
-      - destroy
+stages:
+  - stage: DeployTools
+    displayName: 'Deploy Tools Infrastructure'
+    jobs:
+      - job: DeployTools
+        displayName: 'Deploy Tools'
+        steps:
+          # Step 1: Install Terraform
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: '1.5.7'
 
-steps:
-  - task: TerraformInstaller@1
-    inputs:
-      terraformVersion: "latest"
+          # Step 2: Initialize Terraform with S3 Backend
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'aws'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              backendServiceAWS: 'aws-terraform-connection'
+              backendAWSBucketName: '$(S3_BUCKET_NAME)'
+              backendAWSKey: 'devops-project/tools.tfstate'
+              backendAWSRegion: 'us-east-1'
 
-  - task: AWSCLI@1
-    displayName: "Update kubeconfig"
-    inputs:
-      awsCredentials: "aws-service-connection"
-      regionName: "us-east-1"
-      script: |
-        aws eks update-kubeconfig --name devops-cluster --region $(AWS_REGION)
+          # Step 3: Terraform Validate
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Validate'
+            inputs:
+              provider: 'aws'
+              command: 'validate'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
 
-  - task: TerraformTaskV4@4
-    displayName: "Terraform Init"
-    inputs:
-      provider: "aws"
-      command: "init"
-      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
-      backendServiceAWS: "aws-terraform-connection"
-      backendAWSBucketName: "backend-s3-final-project"
-      backendAWSKey: "tools/terraform.tfstate"
-      backendAWSRegion: "us-east-1"
+          # Step 4: Terraform Plan
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Plan'
+            inputs:
+              provider: 'aws'
+              command: 'plan'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              commandOptions: '-var="project_name=$(TF_VAR_project_name)" -var="environment=$(TF_VAR_environment)" -var="region=$(TF_VAR_region)" -out=tfplan'
+              environmentServiceNameAWS: 'aws-terraform-connection'
 
-  - task: TerraformTaskV4@4
-    displayName: "Terraform Validate"
-    inputs:
-      provider: "aws"
-      command: "validate"
-      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
-      environmentServiceNameAWS: "aws-terraform-connection"
+          # Step 5: Terraform Apply
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'aws'
+              command: 'apply'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              commandOptions: '-var="project_name=$(TF_VAR_project_name)" -var="environment=$(TF_VAR_environment)" -var="region=$(TF_VAR_region)" tfplan'
+              environmentServiceNameAWS: 'aws-terraform-connection'
 
-  - ${{ if eq(parameters.action, 'destroy') }}:
-      - script: |
-          kubectl delete application devops-app -n argocd --ignore-not-found=true --timeout=60s || true
-          kubectl delete ingress --all-namespaces --all --timeout=60s || true
-          kubectl delete targetgroupbindings -A --all --timeout=60s || true
-          kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
-          kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
-          kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
-        displayName: "Pre-destroy Cleanup"
+          # Step 6: Update kubeconfig using AWS CLI
+          - task: AWSCLI@1
+            displayName: 'Update kubeconfig for EKS'
+            inputs:
+              awsCredentials: 'aws-terraform-connection'
+              regionName: 'us-east-1'
+              awsCommand: 'eks'
+              awsSubCommand: 'update-kubeconfig'
+              awsArguments: '--name $(TF_VAR_project_name)-cluster --region us-east-1'
 
-  - task: TerraformTaskV4@4
-    displayName: "Terraform ${{ parameters.action }}"
-    inputs:
-      provider: "aws"
-      command: "${{ parameters.action }}"
-      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
-      commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)" -var="nexus_url=$(nexus-url)" -var="git_repo_url=$(git-repo-url)"'
-      environmentServiceNameAWS: "aws-terraform-connection"
+          # Step 7: Verify EKS cluster connection
+          - task: Bash@3
+            displayName: 'Verify EKS Connection'
+            inputs:
+              script: |
+                echo "Checking cluster info..."
+                kubectl cluster-info
+                echo ""
+                echo "Listing nodes..."
+                kubectl get nodes
+                echo ""
+                echo "Listing namespaces..."
+                kubectl get namespaces
+
+          # Step 8: Install Helm
+          - task: Bash@3
+            displayName: 'Install Helm'
+            inputs:
+              script: |
+                curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+                chmod 700 get_helm.sh
+                ./get_helm.sh
+                helm version
+
+          # Step 9: Add Helm Repositories
+          - task: Bash@3
+            displayName: 'Add Helm Repositories'
+            inputs:
+              script: |
+                helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+                helm repo add argo https://argoproj.github.io/argo-helm
+                helm repo add sonarqube https://sonarqube.github.io/helm-chart/
+                helm repo update
+
+          # Step 10: Create namespaces
+          - task: Bash@3
+            displayName: 'Create Namespaces'
+            inputs:
+              script: |
+                kubectl create namespace ingress-nginx --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+                kubectl create namespace sonarqube --dry-run=client -o yaml | kubectl apply -f -
+
+          # Step 11: Install NGINX Ingress Controller
+          - task: Bash@3
+            displayName: 'Install NGINX Ingress Controller'
+            inputs:
+              script: |
+                helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+                  --namespace ingress-nginx \
+                  --set controller.service.type=LoadBalancer \
+                  --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=nlb \
+                  --wait --timeout 10m
+
+                echo "NGINX Ingress Controller installed successfully!"
+                kubectl get svc -n ingress-nginx
+
+          # Step 12: Install ArgoCD
+          - task: Bash@3
+            displayName: 'Install ArgoCD'
+            inputs:
+              script: |
+                helm upgrade --install argocd argo/argo-cd \
+                  --namespace argocd \
+                  --set server.service.type=ClusterIP \
+                  --set server.extraArgs[0]="--insecure" \
+                  --wait --timeout 10m
+
+                echo "ArgoCD installed successfully!"
+                kubectl get pods -n argocd
+
+                # Get initial admin password
+                echo "Initial ArgoCD admin password:"
+                kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+                echo ""
+
+          # Step 13: Install SonarQube
+          - task: Bash@3
+            displayName: 'Install SonarQube'
+            inputs:
+              script: |
+                helm upgrade --install sonarqube sonarqube/sonarqube \
+                  --namespace sonarqube \
+                  --set service.type=ClusterIP \
+                  --set persistence.enabled=false \
+                  --set postgresql.enabled=true \
+                  --set postgresql.persistence.enabled=false \
+                  --wait --timeout 15m
+
+                echo "SonarQube installed successfully!"
+                kubectl get pods -n sonarqube
+
+          # Step 14: Display Service Information
+          - task: Bash@3
+            displayName: 'Display Service Information'
+            inputs:
+              script: |
+                echo "=========================================="
+                echo "       DEPLOYMENT COMPLETED"
+                echo "=========================================="
+                echo ""
+                echo "NGINX Ingress LoadBalancer URL:"
+                kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+                echo ""
+                echo ""
+                echo "--- ArgoCD ---"
+                echo "Namespace: argocd"
+                echo "Initial Username: admin"
+                echo "Initial Password: (see above or run: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
+                echo ""
+                echo "--- SonarQube ---"
+                echo "Namespace: sonarqube"
+                echo "Default Username: admin"
+                echo "Default Password: admin"
+                echo ""
+                echo "=========================================="
+
+          # Step 15: Output Terraform Outputs
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Output'
+            inputs:
+              provider: 'aws'
+              command: 'custom'
+              customCommand: 'output'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              environmentServiceNameAWS: 'aws-terraform-connection'
