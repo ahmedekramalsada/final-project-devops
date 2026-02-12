@@ -1,6 +1,3 @@
-# Pipeline 1: Infrastructure
-# Deploys: VPC, EKS, NLB, API Gateway, Cognito
-
 trigger:
   paths:
     include:
@@ -35,8 +32,10 @@ steps:
       provider: 'aws'
       command: 'init'
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
-      # Backend is configured in versions.tf - no need to specify here
-      environmentServiceNameAWS: 'aws-service-connection'
+      backendServiceAWS: 'aws-terraform-connection'
+      backendAWSBucketName: 'backend-s3-final-project'
+      backendAWSKey: 'infra/terraform.tfstate'
+      backendAWSRegion: 'us-east-1'
 
   - task: TerraformTaskV4@4
     displayName: 'Terraform Validate'
@@ -44,6 +43,7 @@ steps:
       provider: 'aws'
       command: 'validate'
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
+      environmentServiceNameAWS: 'aws-terraform-connection'
 
   - ${{ if eq(parameters.action, 'destroy') }}:
     - script: |
@@ -61,4 +61,4 @@ steps:
       command: '${{ parameters.action }}'
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
       commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)"'
-      environmentServiceNameAWS: 'aws-service-connection'
+      environmentServiceNameAWS: 'aws-terraform-connection'
