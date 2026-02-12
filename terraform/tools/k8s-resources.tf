@@ -93,7 +93,7 @@ resource "kubectl_manifest" "tooling_ingresses" {
                       number: 9000
   YAML
 
-  depends_on = [helm_release.argocd, helm_release.sonarqube]
+  depends_on = [helm_release.argocd, helm_release.sonarqube, time_sleep.wait_sonarqube]
 }
 
 # ArgoCD Application

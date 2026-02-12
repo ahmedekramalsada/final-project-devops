@@ -59,15 +59,39 @@ resource "helm_release" "argocd" {
   depends_on = [helm_release.nginx, time_sleep.wait_nginx]
 }
 
-# SonarQube
+# SonarQube - Optimized for faster startup
+# Note: Using community edition with embedded H2 database for simplicity
+# For production, use external PostgreSQL
 resource "helm_release" "sonarqube" {
   name             = "sonarqube"
   repository       = "https://sonarsource.github.io/helm-chart-sonarqube"
   chart            = "sonarqube"
   namespace        = "tooling"
   create_namespace = true
-  version          = "10.5.0"
-  timeout          = 900
+  version          = "10.2.0"  # More stable version
+  timeout          = 1200      # Increased timeout (20 minutes)
+
+  # Disable PostgreSQL dependency - use embedded H2 for demo/dev
+  set {
+    name  = "postgresql.enabled"
+    value = "false"
+  }
+
+  # Use embedded H2 database (simpler, faster startup)
+  set {
+    name  = "sonarProperties.sonar\\.jdbc\\.url"
+    value = "jdbc:h2:tcp://127.0.0.1:9092/sonar"
+  }
+
+  set {
+    name  = "sonarProperties.sonar\\.jdbc\\.username"
+    value = "sonar"
+  }
+
+  set {
+    name  = "sonarProperties.sonar\\.jdbc\\.password"
+    value = "sonar"
+  }
 
   set {
     name  = "service.type"
@@ -75,24 +99,80 @@ resource "helm_release" "sonarqube" {
   }
 
   set {
-    name  = "sonarProperties.sonar\\.web\\.context"
+    name  = "sonarWebContext"
     value = "/sonarqube"
   }
 
+  # Community edition (free)
   set {
-    name  = "community.enabled"
-    value = "true"
+    name  = "edition"
+    value = "community"
+  }
+
+  # Resource configuration - optimized for t3.medium nodes
+  set {
+    name  = "resources.requests.memory"
+    value = "1.5Gi"
   }
 
   set {
-    name  = "resources.requests.memory"
-    value = "2Gi"
+    name  = "resources.requests.cpu"
+    value = "500m"
   }
 
   set {
     name  = "resources.limits.memory"
-    value = "4Gi"
+    value = "3Gi"
+  }
+
+  set {
+    name  = "resources.limits.cpu"
+    value = "1000m"
+  }
+
+  # Increase init container resources
+  set {
+    name  = "initContainers.resources.requests.memory"
+    value = "512Mi"
+  }
+
+  set {
+    name  = "initContainers.resources.limits.memory"
+    value = "512Mi"
+  }
+
+  # Faster startup probes
+  set {
+    name  = "startupProbe.initialDelaySeconds"
+    value = "60"
+  }
+
+  set {
+    name  = "startupProbe.periodSeconds"
+    value = "10"
+  }
+
+  set {
+    name  = "livenessProbe.initialDelaySeconds"
+    value = "120"
+  }
+
+  set {
+    name  = "readinessProbe.initialDelaySeconds"
+    value = "90"
+  }
+
+  # Disable monitoring for faster startup
+  set {
+    name  = "prometheusExporter.enabled"
+    value = "false"
   }
 
   depends_on = [helm_release.nginx, time_sleep.wait_nginx]
+}
+
+# Wait for SonarQube to be fully ready
+resource "time_sleep" "wait_sonarqube" {
+  create_duration = "60s"
+  depends_on      = [helm_release.sonarqube]
 }
