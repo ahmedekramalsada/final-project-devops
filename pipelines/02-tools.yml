@@ -80,7 +80,7 @@ stages:
           - task: AWSCLI@1
             displayName: 'Update kubeconfig for EKS'
             inputs:
-              awsCredentials: 'aws-terraform-connection'
+              awsCredentials: 'aws-service-connection'
               regionName: 'us-east-1'
               awsCommand: 'eks'
               awsSubCommand: 'update-kubeconfig'
