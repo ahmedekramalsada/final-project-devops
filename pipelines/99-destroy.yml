@@ -1,0 +1,70 @@
+# Pipeline: Full Destroy
+# Destroys Tools first, then Infrastructure
+
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: 'devops-config'
+
+stages:
+  - stage: DestroyTools
+    displayName: 'Destroy Tools'
+    jobs:
+      - job: Destroy
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: 'latest'
+
+          - script: |
+              aws eks update-kubeconfig --name devops-cluster --region us-east-1 || true
+              kubectl delete application devops-app -n argocd --ignore-not-found=true || true
+              kubectl delete ingress --all-namespaces --all --timeout=60s || true
+              kubectl delete targetgroupbindings -A --all --timeout=60s || true
+              kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
+              kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
+              kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
+            displayName: 'Cleanup K8s Resources'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'aws'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              environmentServiceNameAWS: 'aws-service-connection'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'aws'
+              command: 'destroy'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+              commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)" -var="nexus_url=$(nexus-url)" -var="git_repo_url=$(git-repo-url)"'
+              environmentServiceNameAWS: 'aws-service-connection'
+
+  - stage: DestroyInfrastructure
+    displayName: 'Destroy Infrastructure'
+    dependsOn: DestroyTools
+    jobs:
+      - job: Destroy
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'aws'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
+              environmentServiceNameAWS: 'aws-service-connection'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'aws'
+              command: 'destroy'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
+              commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)"'
+              environmentServiceNameAWS: 'aws-service-connection'

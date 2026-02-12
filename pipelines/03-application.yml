@@ -1,0 +1,89 @@
+# Pipeline 3: Application
+# Builds Docker image, pushes to Nexus, triggers ArgoCD sync
+
+trigger:
+  paths:
+    include:
+      - app/**
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: 'devops-config'
+  - name: imageTag
+    value: '$(Build.BuildId)'
+
+steps:
+  # SonarQube Analysis
+  - task: SonarQubePrepare@6
+    inputs:
+      SonarQube: 'sonarqube-service-connection'
+      scannerMode: 'CLI'
+      configMode: 'manual'
+      cliProjectKey: 'devops-app'
+      cliProjectName: 'DevOps App'
+      cliSources: 'app'
+
+  - task: SonarQubeAnalyze@6
+
+  - task: SonarQubePublish@6
+    inputs:
+      pollingTimeoutSec: '300'
+
+  # Build Docker Image
+  - task: Docker@2
+    displayName: 'Build Image'
+    inputs:
+      containerRegistry: 'nexus-service-connection'
+      repository: 'devops-app'
+      command: 'build'
+      Dockerfile: 'app/Dockerfile'
+      buildContext: 'app'
+      tags: |
+        $(imageTag)
+        latest
+
+  # Trivy Security Scan
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+      echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+      sudo apt-get update
+      sudo apt-get install -y trivy
+      trivy image --exit-code 0 --severity HIGH,CRITICAL $(nexus-url):8082/devops-app:$(imageTag) || true
+    displayName: 'Trivy Scan'
+
+  # Push to Nexus
+  - task: Docker@2
+    displayName: 'Push to Nexus'
+    inputs:
+      containerRegistry: 'nexus-service-connection'
+      repository: 'devops-app'
+      command: 'push'
+      tags: |
+        $(imageTag)
+        latest
+
+  # Update K8s Deployment
+  - script: |
+      cd $(System.DefaultWorkingDirectory)
+      sed -i "s|image: IMAGE_PLACEHOLDER|image: $(nexus-url):8082/devops-app:$(imageTag)|g" k8s/app/deployment.yaml
+      cat k8s/app/deployment.yaml | grep "image:"
+    displayName: 'Update Deployment Image'
+
+  # Commit Changes
+  - script: |
+      cd $(System.DefaultWorkingDirectory)
+      git config user.email "pipeline@azuredevops.com"
+      git config user.name "Azure Pipeline"
+      git add k8s/app/deployment.yaml
+      git diff --quiet --cached || git commit -m "ci: update image to $(imageTag) [skip ci]"
+      git push https://$(git-token)@github.com/$(git-repo).git HEAD:main || true
+    displayName: 'Push Changes'
+    env:
+      git-token: $(git-token)

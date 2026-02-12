@@ -1,0 +1,68 @@
+# Pipeline 2: Tools
+# Deploys: NGINX Ingress, ArgoCD, SonarQube
+
+trigger:
+  paths:
+    include:
+      - terraform/tools/**
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: 'devops-config'
+
+parameters:
+  - name: action
+    displayName: 'Action'
+    type: string
+    default: 'apply'
+    values:
+      - apply
+      - destroy
+
+steps:
+  - task: TerraformInstaller@1
+    inputs:
+      terraformVersion: 'latest'
+
+  - script: |
+      aws eks update-kubeconfig --name devops-cluster --region us-east-1
+    displayName: 'Configure kubectl'
+
+  - task: TerraformTaskV4@4
+    displayName: 'Terraform Init'
+    inputs:
+      provider: 'aws'
+      command: 'init'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+      environmentServiceNameAWS: 'aws-service-connection'
+
+  - task: TerraformTaskV4@4
+    displayName: 'Terraform Validate'
+    inputs:
+      provider: 'aws'
+      command: 'validate'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+
+  - ${{ if eq(parameters.action, 'destroy') }}:
+    - script: |
+        kubectl delete application devops-app -n argocd --ignore-not-found=true --timeout=60s || true
+        kubectl delete ingress --all-namespaces --all --timeout=60s || true
+        kubectl delete targetgroupbindings -A --all --timeout=60s || true
+        kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
+        kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
+        kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
+      displayName: 'Pre-destroy Cleanup'
+
+  - task: TerraformTaskV4@4
+    displayName: 'Terraform ${{ parameters.action }}'
+    inputs:
+      provider: 'aws'
+      command: '${{ parameters.action }}'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+      commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)" -var="nexus_url=$(nexus-url)" -var="git_repo_url=$(git-repo-url)"'
+      environmentServiceNameAWS: 'aws-service-connection'
