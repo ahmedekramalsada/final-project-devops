@@ -11,6 +11,8 @@ pool:
 
 variables:
   - group: 'devops-config'
+  - name: S3_BUCKET_NAME
+    value: 'backend-s3-final-project'
 
 parameters:
   - name: action
@@ -24,7 +26,7 @@ parameters:
 steps:
   - task: TerraformInstaller@1
     inputs:
-      terraformVersion: 'latest'
+      terraformVersion: '1.5.7'
 
   - task: TerraformTaskV4@4
     displayName: 'Terraform Init'
@@ -33,7 +35,7 @@ steps:
       command: 'init'
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
       backendServiceAWS: 'aws-terraform-connection'
-      backendAWSBucketName: 'backend-s3-final-project'
+      backendAWSBucketName: '$(S3_BUCKET_NAME)'
       backendAWSKey: 'infra/terraform.tfstate'
       backendAWSRegion: 'us-east-1'
 

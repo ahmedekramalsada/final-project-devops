@@ -8,6 +8,8 @@ pool:
 
 variables:
   - group: 'devops-config'
+  - name: S3_BUCKET_NAME
+    value: "backend-s3-final-project"
 
 stages:
   - stage: DestroyTools
@@ -17,32 +19,39 @@ stages:
         steps:
           - task: TerraformInstaller@1
             inputs:
-              terraformVersion: 'latest'
+              terraformVersion: '1.5.7'
 
           - script: |
               aws eks update-kubeconfig --name devops-cluster --region us-east-1 || true
               kubectl delete application devops-app -n argocd --ignore-not-found=true || true
               kubectl delete ingress --all-namespaces --all --timeout=60s || true
               kubectl delete targetgroupbindings -A --all --timeout=60s || true
+              kubectl delete secret app-secrets -n default --ignore-not-found=true || true
+              kubectl delete secret nexus-registry-secret -n default --ignore-not-found=true || true
               kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
               kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
               kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
             displayName: 'Cleanup K8s Resources'
 
           - task: TerraformTaskV4@4
+            displayName: 'Terraform Init Tools'
             inputs:
               provider: 'aws'
               command: 'init'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
-              environmentServiceNameAWS: 'aws-service-connection'
+              backendServiceAWS: 'aws-terraform-connection'
+              backendAWSBucketName: '$(S3_BUCKET_NAME)'
+              backendAWSKey: 'tools/terraform.tfstate'
+              backendAWSRegion: 'us-east-1'
 
           - task: TerraformTaskV4@4
+            displayName: 'Terraform Destroy Tools'
             inputs:
               provider: 'aws'
               command: 'destroy'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
               commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)" -var="nexus_url=$(nexus-url)" -var="git_repo_url=$(git-repo-url)"'
-              environmentServiceNameAWS: 'aws-service-connection'
+              environmentServiceNameAWS: 'aws-terraform-connection'
 
   - stage: DestroyInfrastructure
     displayName: 'Destroy Infrastructure'
@@ -52,19 +61,30 @@ stages:
         steps:
           - task: TerraformInstaller@1
             inputs:
-              terraformVersion: 'latest'
+              terraformVersion: '1.5.7'
+
+          - script: |
+              aws eks update-kubeconfig --name devops-cluster --region us-east-1 || true
+              kubectl delete ingress --all-namespaces --all --timeout=60s || true
+              kubectl delete targetgroupbindings -A --all --timeout=60s || true
+            displayName: 'Pre-destroy Cleanup'
 
           - task: TerraformTaskV4@4
+            displayName: 'Terraform Init Infrastructure'
             inputs:
               provider: 'aws'
               command: 'init'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
-              environmentServiceNameAWS: 'aws-service-connection'
+              backendServiceAWS: 'aws-terraform-connection'
+              backendAWSBucketName: '$(S3_BUCKET_NAME)'
+              backendAWSKey: 'infra/terraform.tfstate'
+              backendAWSRegion: 'us-east-1'
 
           - task: TerraformTaskV4@4
+            displayName: 'Terraform Destroy Infrastructure'
             inputs:
               provider: 'aws'
               command: 'destroy'
               workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
               commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)"'
-              environmentServiceNameAWS: 'aws-service-connection'
+              environmentServiceNameAWS: 'aws-terraform-connection'

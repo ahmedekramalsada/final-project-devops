@@ -18,10 +18,8 @@ variables:
     value: "us-east-1"
   - name: TF_VAR_project_name
     value: "devops-final"
-  # Replace with your actual S3 bucket name
   - name: S3_BUCKET_NAME
     value: "backend-s3-final-project"
-  # Replace with your actual values
   - name: VAULT_ADDRESS
     value: "http://18.215.161.128:8200"
   - name: NEXUS_URL
@@ -51,7 +49,7 @@ stages:
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
               backendServiceAWS: "aws-terraform-connection"
               backendAWSBucketName: "$(S3_BUCKET_NAME)"
-              backendAWSKey: "devops-project/tools.tfstate"
+              backendAWSKey: "tools/terraform.tfstate"
               backendAWSRegion: "us-east-1"
 
           # Step 3: Terraform Validate
@@ -73,7 +71,7 @@ stages:
                 -var="aws_region=$(TF_VAR_aws_region)"
                 -var="project_name=$(TF_VAR_project_name)"
                 -var="vault_address=$(VAULT_ADDRESS)"
-                -var="vault_token=$(VAULT_TOKEN)"
+                -var="vault_token=$(vault-token)"
                 -var="nexus_url=$(NEXUS_URL)"
                 -var="git_repo_url=$(GIT_REPO_URL)"
                 -out=tfplan
