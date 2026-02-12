@@ -7,16 +7,16 @@ trigger:
       - main
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
 variables:
-  - group: 'devops-config'
+  - group: "devops-config"
 
 parameters:
   - name: action
-    displayName: 'Action'
+    displayName: "Action"
     type: string
-    default: 'apply'
+    default: "apply"
     values:
       - apply
       - destroy
@@ -24,46 +24,50 @@ parameters:
 steps:
   - task: TerraformInstaller@1
     inputs:
-      terraformVersion: 'latest'
+      terraformVersion: "latest"
 
-  - script: |
-      aws eks update-kubeconfig --name devops-cluster --region us-east-1
-    displayName: 'Configure kubectl'
+  - task: AWSCLI@1
+    displayName: "Update kubeconfig"
+    inputs:
+      awsCredentials: "aws-terraform-connection"
+      regionName: "us-east-1"
+      script: |
+        aws eks update-kubeconfig --name devops-cluster --region $(AWS_REGION)
 
   - task: TerraformTaskV4@4
-    displayName: 'Terraform Init'
+    displayName: "Terraform Init"
     inputs:
-      provider: 'aws'
-      command: 'init'
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
-      backendServiceAWS: 'aws-terraform-connection'
-      backendAWSBucketName: 'backend-s3-final-project'
-      backendAWSKey: 'tools/terraform.tfstate'
-      backendAWSRegion: 'us-east-1'
+      provider: "aws"
+      command: "init"
+      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
+      backendServiceAWS: "aws-terraform-connection"
+      backendAWSBucketName: "backend-s3-final-project"
+      backendAWSKey: "tools/terraform.tfstate"
+      backendAWSRegion: "us-east-1"
 
   - task: TerraformTaskV4@4
-    displayName: 'Terraform Validate'
+    displayName: "Terraform Validate"
     inputs:
-      provider: 'aws'
-      command: 'validate'
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
-      environmentServiceNameAWS: 'aws-terraform-connection'
+      provider: "aws"
+      command: "validate"
+      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
+      environmentServiceNameAWS: "aws-terraform-connection"
 
   - ${{ if eq(parameters.action, 'destroy') }}:
-    - script: |
-        kubectl delete application devops-app -n argocd --ignore-not-found=true --timeout=60s || true
-        kubectl delete ingress --all-namespaces --all --timeout=60s || true
-        kubectl delete targetgroupbindings -A --all --timeout=60s || true
-        kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
-        kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
-        kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
-      displayName: 'Pre-destroy Cleanup'
+      - script: |
+          kubectl delete application devops-app -n argocd --ignore-not-found=true --timeout=60s || true
+          kubectl delete ingress --all-namespaces --all --timeout=60s || true
+          kubectl delete targetgroupbindings -A --all --timeout=60s || true
+          kubectl delete namespace tooling --ignore-not-found=true --timeout=60s || true
+          kubectl delete namespace argocd --ignore-not-found=true --timeout=60s || true
+          kubectl delete namespace ingress-nginx --ignore-not-found=true --timeout=60s || true
+        displayName: "Pre-destroy Cleanup"
 
   - task: TerraformTaskV4@4
-    displayName: 'Terraform ${{ parameters.action }}'
+    displayName: "Terraform ${{ parameters.action }}"
     inputs:
-      provider: 'aws'
-      command: '${{ parameters.action }}'
-      workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/tools'
+      provider: "aws"
+      command: "${{ parameters.action }}"
+      workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
       commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)" -var="nexus_url=$(nexus-url)" -var="git_repo_url=$(git-repo-url)"'
-      environmentServiceNameAWS: 'aws-terraform-connection'
+      environmentServiceNameAWS: "aws-terraform-connection"
