@@ -1,5 +1,5 @@
-# Tools Pipeline - Simplified (Terraform Only)
-# Terraform handles all tool installations (NGINX, ArgoCD, SonarQube, ALB Controller)
+# Tools Pipeline - Deploys NGINX, ArgoCD, SonarQube
+# Terraform handles all tool installations
 
 trigger:
   branches:
@@ -33,6 +33,7 @@ stages:
     jobs:
       - job: DeployTools
         displayName: "Deploy Tools"
+        timeoutInMinutes: 90  # Increase timeout to 90 minutes
         steps:
           # Step 1: Install Terraform
           - task: TerraformInstaller@1
@@ -96,3 +97,13 @@ stages:
               customCommand: "output"
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
               environmentServiceNameAWS: "aws-terraform-connection"
+
+          # Step 7: Check SonarQube pod status (informational)
+          - script: |
+              echo "Checking SonarQube pod status..."
+              kubectl get pods -n tooling || true
+              echo ""
+              echo "Checking all namespaces..."
+              kubectl get pods -A || true
+            displayName: "Check Pod Status"
+            condition: always()

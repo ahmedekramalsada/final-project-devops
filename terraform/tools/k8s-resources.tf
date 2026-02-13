@@ -1,4 +1,6 @@
-# TargetGroupBinding for NGINX
+# =============================================================================
+# TargetGroupBinding for NGINX Ingress
+# =============================================================================
 resource "kubectl_manifest" "nginx_tgb" {
   yaml_body = yamlencode({
     apiVersion = "elbv2.k8s.aws/v1beta1"
@@ -17,16 +19,24 @@ resource "kubectl_manifest" "nginx_tgb" {
     }
   })
 
-  depends_on = [helm_release.nginx, time_sleep.wait_nginx]
+  depends_on = [
+    helm_release.nginx,
+    helm_release.aws_load_balancer_controller,
+    time_sleep.wait_nginx
+  ]
 }
 
+# =============================================================================
 # Fetch Nexus credentials from Vault
+# =============================================================================
 data "vault_kv_secret_v2" "nexus" {
   mount = "kv"
   name  = "nexus"
 }
 
+# =============================================================================
 # Nexus Docker registry secret for pulling images
+# =============================================================================
 resource "kubernetes_secret" "nexus_registry" {
   metadata {
     name      = "nexus-registry-secret"
@@ -48,8 +58,10 @@ resource "kubernetes_secret" "nexus_registry" {
   }
 }
 
-# Tooling Ingresses (ArgoCD, SonarQube)
-resource "kubectl_manifest" "tooling_ingresses" {
+# =============================================================================
+# Ingress for ArgoCD
+# =============================================================================
+resource "kubectl_manifest" "argocd_ingress" {
   yaml_body = <<-YAML
     apiVersion: networking.k8s.io/v1
     kind: Ingress
@@ -59,6 +71,7 @@ resource "kubectl_manifest" "tooling_ingresses" {
       annotations:
         nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
         nginx.ingress.kubernetes.io/rewrite-target: /$2
+        nginx.ingress.kubernetes.io/use-regex: "true"
     spec:
       ingressClassName: nginx
       rules:
@@ -71,14 +84,29 @@ resource "kubectl_manifest" "tooling_ingresses" {
                     name: argocd-server
                     port:
                       number: 80
-    ---
+  YAML
+
+  depends_on = [
+    helm_release.argocd,
+    helm_release.nginx,
+    time_sleep.wait_argocd
+  ]
+}
+
+# =============================================================================
+# Ingress for SonarQube
+# =============================================================================
+resource "kubectl_manifest" "sonarqube_ingress" {
+  yaml_body = <<-YAML
     apiVersion: networking.k8s.io/v1
     kind: Ingress
     metadata:
       name: sonarqube-ingress
       namespace: tooling
       annotations:
-        nginx.ingress.kubernetes.io/rewrite-target: /$2
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+        nginx.ingress.kubernetes.io/rewrite-target: /sonarqube/$2
+        nginx.ingress.kubernetes.io/use-regex: "true"
     spec:
       ingressClassName: nginx
       rules:
@@ -93,17 +121,23 @@ resource "kubectl_manifest" "tooling_ingresses" {
                       number: 9000
   YAML
 
-  depends_on = [helm_release.argocd, helm_release.sonarqube, time_sleep.wait_sonarqube]
+  depends_on = [
+    helm_release.sonarqube,
+    helm_release.nginx,
+    time_sleep.wait_sonarqube
+  ]
 }
 
-# ArgoCD Application
+# =============================================================================
+# ArgoCD Application for DevOps App
+# =============================================================================
 resource "kubectl_manifest" "argocd_app" {
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name      = "devops-app"
-      namespace = "argocd"
+      name       = "devops-app"
+      namespace  = "argocd"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
@@ -127,5 +161,8 @@ resource "kubectl_manifest" "argocd_app" {
     }
   })
 
-  depends_on = [helm_release.argocd]
+  depends_on = [
+    helm_release.argocd,
+    time_sleep.wait_argocd
+  ]
 }

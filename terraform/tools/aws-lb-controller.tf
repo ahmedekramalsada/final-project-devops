@@ -1,3 +1,7 @@
+# =============================================================================
+# IAM Role for AWS Load Balancer Controller
+# =============================================================================
+
 data "aws_iam_policy_document" "lb_controller_assume" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -29,34 +33,4 @@ resource "aws_iam_role" "lb_controller" {
 resource "aws_iam_role_policy_attachment" "lb_controller" {
   role       = aws_iam_role.lb_controller.name
   policy_arn = aws_iam_policy.lb_controller.arn
-}
-
-resource "helm_release" "aws_load_balancer_controller" {
-  name       = "aws-load-balancer-controller"
-  repository = "https://aws.github.io/eks-charts"
-  chart      = "aws-load-balancer-controller"
-  namespace  = "kube-system"
-  timeout    = 600
-
-  set {
-    name  = "clusterName"
-    value = data.terraform_remote_state.infrastructure.outputs.cluster_name
-  }
-
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
-  }
-
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.lb_controller.arn
-  }
-
-  depends_on = [aws_iam_role_policy_attachment.lb_controller]
 }
