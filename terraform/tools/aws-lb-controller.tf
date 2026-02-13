@@ -2,6 +2,13 @@
 # IAM Role for AWS Load Balancer Controller
 # =============================================================================
 
+# Get OIDC provider URL for trust policy
+locals {
+  oidc_provider_url = replace(data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn, "arn:aws:iam::", "")
+  oidc_provider_arn = data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn
+}
+
+# Trust policy document for OIDC
 data "aws_iam_policy_document" "lb_controller_assume" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -9,33 +16,33 @@ data "aws_iam_policy_document" "lb_controller_assume" {
 
     principals {
       type        = "Federated"
-      identifiers = [data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn]
+      identifiers = [local.oidc_provider_arn]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "${replace(data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn, "/^(.*provider/)/", "")}:sub"
+      variable = "${local.oidc_provider_url}:sub"
       values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "${replace(data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn, "/^(.*provider/)/", "")}:aud"
+      variable = "${local.oidc_provider_url}:aud"
       values   = ["sts.amazonaws.com"]
     }
   }
 }
 
-# Create IAM Policy
+# Create IAM Policy with unique name
 resource "aws_iam_policy" "lb_controller" {
-  name        = "${var.project_name}-lb-controller"
+  name        = "${var.project_name}-lb-controller-v2"
   description = "IAM policy for AWS Load Balancer Controller"
   policy      = file("${path.module}/iam_policy.json")
 }
 
-# Create IAM Role with correct OIDC trust policy
+# Create IAM Role with unique name
 resource "aws_iam_role" "lb_controller" {
-  name                  = "${var.project_name}-lb-controller"
+  name                  = "${var.project_name}-lb-controller-v2"
   assume_role_policy    = data.aws_iam_policy_document.lb_controller_assume.json
   force_detach_policies = true
 }
