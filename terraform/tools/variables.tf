@@ -32,9 +32,3 @@ variable "git_repo_url" {
   description = "Git repository URL for ArgoCD"
   type        = string
 }
-
-variable "create_lb_controller_iam" {
-  description = "Whether to create new IAM resources for LB Controller (set to false if they already exist)"
-  type        = bool
-  default     = true
-}

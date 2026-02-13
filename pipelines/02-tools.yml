@@ -35,6 +35,44 @@ stages:
         displayName: "Deploy Tools"
         timeoutInMinutes: 90
         steps:
+          # Step 0: Clean up existing IAM resources (if any)
+          - script: |
+              echo "Cleaning up existing IAM resources..."
+              ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+              POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/devops-final-lb-controller"
+              ROLE_NAME="devops-final-lb-controller"
+
+              echo "Account ID: ${ACCOUNT_ID}"
+              echo "Policy ARN: ${POLICY_ARN}"
+              echo "Role Name: ${ROLE_NAME}"
+
+              # List attached policies and detach them
+              ATTACHED_POLICIES=$(aws iam list-attached-role-policies --role-name ${ROLE_NAME} --query 'AttachedPolicies[*].PolicyArn' --output text 2>/dev/null || true)
+              for POLICY in $ATTACHED_POLICIES; do
+                echo "Detaching policy: $POLICY"
+                aws iam detach-role-policy --role-name ${ROLE_NAME} --policy-arn ${POLICY} || true
+              done
+
+              # Delete role
+              echo "Deleting role: ${ROLE_NAME}"
+              aws iam delete-role --role-name ${ROLE_NAME} 2>/dev/null || echo "Role not found or already deleted"
+
+              # Delete policy versions (except default)
+              VERSIONS=$(aws iam list-policy-versions --policy-arn ${POLICY_ARN} --query 'Versions[*].VersionId' --output text 2>/dev/null || true)
+              for VERSION in $VERSIONS; do
+                if [ "$VERSION" != "v1" ]; then
+                  echo "Deleting policy version: $VERSION"
+                  aws iam delete-policy-version --policy-arn ${POLICY_ARN} --version-id ${VERSION} || true
+                fi
+              done
+
+              # Delete policy
+              echo "Deleting policy: ${POLICY_ARN}"
+              aws iam delete-policy --policy-arn ${POLICY_ARN} 2>/dev/null || echo "Policy not found or already deleted"
+
+              echo "Cleanup complete!"
+            displayName: "Cleanup IAM Resources"
+
           # Step 1: Install Terraform
           - task: TerraformInstaller@1
             displayName: "Install Terraform"
@@ -61,7 +99,7 @@ stages:
               command: "validate"
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
 
-          # Step 4: Terraform Plan - Use existing IAM resources
+          # Step 4: Terraform Plan
           - task: TerraformTaskV4@4
             displayName: "Terraform Plan"
             inputs:
@@ -75,7 +113,6 @@ stages:
                 -var="vault_token=$(vault-token)"
                 -var="nexus_url=$(NEXUS_URL)"
                 -var="git_repo_url=$(GIT_REPO_URL)"
-                -var="create_lb_controller_iam=false"
                 -out=tfplan
               environmentServiceNameAWS: "aws-terraform-connection"
 
