@@ -64,27 +64,45 @@ stages:
               backendAWSKey: "tools/terraform.tfstate"
               backendAWSRegion: "us-east-1"
 
-          # Step 4: Import existing resources if they exist (prevents "already exists" errors)
+          # Step 4: Configure kubectl
           - script: |
-              # Configure kubectl for import operations
               aws eks update-kubeconfig --name devops-cluster --region us-east-1
-              
+              kubectl cluster-info
+            displayName: "Configure kubectl"
+            env:
+              AWS_ACCESS_KEY_ID: $(aws-access-key-id)
+              AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
+              AWS_DEFAULT_REGION: "us-east-1"
+
+          # Step 5: Import existing Kubernetes resources to Terraform state
+          # This MUST happen BEFORE terraform plan
+          - script: |
               cd "$(System.DefaultWorkingDirectory)/terraform/tools"
-              
-              # Try to import the service account if it exists
+
+              echo "=== Checking for existing resources ==="
+
+              # Import service account if it exists
               if kubectl get serviceaccount aws-load-balancer-controller -n kube-system >/dev/null 2>&1; then
                 echo "Service account exists, importing to Terraform state..."
-                terraform import kubernetes_service_account.lb_controller kube-system/aws-load-balancer-controller || echo "Import may already exist, continuing..."
+                terraform import -lock=false kubernetes_service_account.lb_controller kube-system/aws-load-balancer-controller 2>/dev/null || echo "Already in state or import failed, continuing..."
               else
                 echo "Service account does not exist, will be created by Terraform"
               fi
+
+              # Import nexus registry secret if it exists
+              if kubectl get secret nexus-registry-secret -n default >/dev/null 2>&1; then
+                echo "Nexus secret exists, importing to Terraform state..."
+                terraform import -lock=false kubernetes_secret.nexus_registry default/nexus-registry-secret 2>/dev/null || echo "Already in state or import failed, continuing..."
+              fi
+
+              echo "=== Import complete ==="
             displayName: "Import Existing Resources"
             env:
               AWS_ACCESS_KEY_ID: $(aws-access-key-id)
               AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
               AWS_DEFAULT_REGION: "us-east-1"
 
-          # Step 5: Terraform Validate
+          # Step 6: Terraform Validate
           - task: TerraformTaskV4@4
             displayName: "Terraform Validate"
             inputs:
@@ -92,7 +110,7 @@ stages:
               command: "validate"
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
 
-          # Step 6: Terraform Plan
+          # Step 7: Terraform Plan (AFTER imports)
           - task: TerraformTaskV4@4
             displayName: "Terraform Plan"
             inputs:
@@ -109,7 +127,7 @@ stages:
                 -out=tfplan
               environmentServiceNameAWS: "aws-terraform-connection"
 
-          # Step 7: Terraform Apply
+          # Step 8: Terraform Apply
           - task: TerraformTaskV4@4
             displayName: "Terraform Apply"
             inputs:
@@ -119,14 +137,8 @@ stages:
               commandOptions: "tfplan"
               environmentServiceNameAWS: "aws-terraform-connection"
 
-          # Step 8: Verify deployment
+          # Step 9: Verify deployment
           - script: |
-              echo "Configuring kubectl access to EKS cluster..."
-              aws eks update-kubeconfig --name devops-cluster --region us-east-1
-              echo ""
-              echo "Testing cluster connection..."
-              kubectl cluster-info
-              echo ""
               echo "=== Verifying AWS Load Balancer Controller ==="
               kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller || echo "LB Controller pods not yet ready"
               echo ""
@@ -138,7 +150,7 @@ stages:
               AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
               AWS_DEFAULT_REGION: "us-east-1"
 
-          # Step 9: Check all pod status
+          # Step 10: Check all pod status
           - script: |
               echo "=== All Pods Status ==="
               kubectl get pods -A || true
@@ -149,7 +161,7 @@ stages:
               AWS_DEFAULT_REGION: "us-east-1"
             condition: always()
 
-          # Step 10: Terraform Output
+          # Step 11: Terraform Output
           - task: TerraformTaskV4@4
             displayName: "Terraform Output"
             inputs:
