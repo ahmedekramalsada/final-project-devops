@@ -39,7 +39,7 @@ stages:
           - task: AwsCli@1
             displayName: "Cleanup IAM Resources"
             inputs:
-              awsCredentials: "aws-terraform-connection"
+              awsCredentials: "aws-service-connection"
               regionName: "us-east-1"
               scriptType: "bash"
               scriptInline: |
