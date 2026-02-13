@@ -107,6 +107,12 @@ resource "kubernetes_service_account" "lb_controller" {
     }
   }
 
+  # Handle existing service accounts gracefully
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [metadata[0].labels]  # Ignore label changes from Helm
+  }
+
   # Wait for IAM role propagation
   depends_on = [
     aws_iam_role_policy_attachment.lb_controller,
