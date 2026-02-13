@@ -1,8 +1,9 @@
 # =============================================================================
 # AWS Load Balancer Controller - MUST be installed FIRST
 # =============================================================================
+# Initial wait for EKS cluster to be fully ready
 resource "time_sleep" "wait_for_eks" {
-  create_duration = "120s"
+  create_duration = "90s"
 }
 
 resource "helm_release" "aws_load_balancer_controller" {
@@ -14,33 +15,79 @@ resource "helm_release" "aws_load_balancer_controller" {
   timeout    = 600
   wait       = true
 
+  # Cluster configuration
   set {
     name  = "clusterName"
     value = data.terraform_remote_state.infrastructure.outputs.cluster_name
   }
 
+  # CRITICAL: Do NOT create service account - we created it with IRSA annotation
   set {
     name  = "serviceAccount.create"
-    value = "true"
+    value = "false"
   }
 
+  # Use the pre-created service account
   set {
     name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
+    value = local.lb_controller_sa_name
   }
 
-  # Correct annotation format for EKS Pod Identity
+  # Region configuration for AWS SDK
   set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = local.lb_controller_role_arn
+    name  = "region"
+    value = var.aws_region
   }
 
-  depends_on = [time_sleep.wait_for_eks]
+  # VPC ID for the controller
+  set {
+    name  = "vpcId"
+    value = data.terraform_remote_state.infrastructure.outputs.vpc_id
+  }
+
+  # Enable ingress class resource
+  set {
+    name  = "ingressClassConfig.default"
+    value = "false"
+  }
+
+  # Resource limits for t3.medium nodes
+  set {
+    name  = "resources.requests.cpu"
+    value = "100m"
+  }
+
+  set {
+    name  = "resources.requests.memory"
+    value = "128Mi"
+  }
+
+  set {
+    name  = "resources.limits.cpu"
+    value = "500m"
+  }
+
+  set {
+    name  = "resources.limits.memory"
+    value = "512Mi"
+  }
+
+  # Replica count
+  set {
+    name  = "replicaCount"
+    value = "1"
+  }
+
+  # Depends on the service account being ready with IAM propagation
+  depends_on = [
+    kubernetes_service_account.lb_controller,
+    time_sleep.wait_iam_propagation
+  ]
 }
 
-# Wait for AWS LB Controller to be fully ready
+# Wait for AWS LB Controller to be fully ready and webhook operational
 resource "time_sleep" "wait_lb_controller" {
-  create_duration = "60s"
+  create_duration = "90s"
   depends_on      = [helm_release.aws_load_balancer_controller]
 }
 
@@ -57,17 +104,19 @@ resource "helm_release" "nginx" {
   timeout          = 600
   wait             = true
 
+  # Use NodePort type for internal load balancer setup
   set {
     name  = "controller.service.type"
     value = "NodePort"
   }
 
+  # Disable metrics to save resources
   set {
     name  = "controller.metrics.enabled"
     value = "false"
   }
 
-  # Reduce resource usage
+  # Resource optimization for t3.medium
   set {
     name  = "controller.resources.requests.cpu"
     value = "100m"
@@ -88,16 +137,32 @@ resource "helm_release" "nginx" {
     value = "512Mi"
   }
 
-  depends_on = [helm_release.aws_load_balancer_controller, time_sleep.wait_lb_controller]
+  # Publish service on all nodes
+  set {
+    name  = "controller.service.externalTrafficPolicy"
+    value = "Local"
+  }
+
+  # Health check configuration
+  set {
+    name  = "controller.healthCheckPath"
+    value = "/healthz"
+  }
+
+  depends_on = [
+    helm_release.aws_load_balancer_controller,
+    time_sleep.wait_lb_controller
+  ]
 }
 
+# Wait for NGINX to be fully ready
 resource "time_sleep" "wait_nginx" {
   create_duration = "60s"
   depends_on      = [helm_release.nginx]
 }
 
 # =============================================================================
-# ArgoCD
+# ArgoCD - GitOps Continuous Delivery
 # =============================================================================
 resource "helm_release" "argocd" {
   name             = "argocd"
@@ -109,11 +174,13 @@ resource "helm_release" "argocd" {
   timeout          = 900
   wait             = true
 
+  # Service configuration
   set {
     name  = "server.service.type"
     value = "ClusterIP"
   }
 
+  # Ingress path configuration for reverse proxy
   set {
     name  = "server.insecure"
     value = "true"
@@ -139,7 +206,7 @@ resource "helm_release" "argocd" {
     value = "--rootpath=/argocd"
   }
 
-  # Reduce resource usage for controller
+  # Resource optimization for controller
   set {
     name  = "controller.resources.requests.cpu"
     value = "100m"
@@ -155,7 +222,7 @@ resource "helm_release" "argocd" {
     value = "512Mi"
   }
 
-  # Reduce resource usage for repo-server
+  # Resource optimization for repo-server
   set {
     name  = "repoServer.resources.requests.cpu"
     value = "100m"
@@ -171,7 +238,7 @@ resource "helm_release" "argocd" {
     value = "512Mi"
   }
 
-  # Reduce resource usage for applicationset-controller
+  # Resource optimization for applicationset-controller
   set {
     name  = "applicationSet.resources.requests.cpu"
     value = "100m"
@@ -193,9 +260,13 @@ resource "helm_release" "argocd" {
     value = "false"
   }
 
-  depends_on = [helm_release.nginx, time_sleep.wait_nginx]
+  depends_on = [
+    helm_release.nginx,
+    time_sleep.wait_nginx
+  ]
 }
 
+# Wait for ArgoCD to be fully ready
 resource "time_sleep" "wait_argocd" {
   create_duration = "60s"
   depends_on      = [helm_release.argocd]
@@ -212,15 +283,15 @@ resource "helm_release" "sonarqube" {
   create_namespace = true
   version          = "10.2.1"
   timeout          = 1200
-  wait             = false  # Don't wait - SonarQube takes too long
+  wait             = false  # Don't wait - SonarQube takes too long to initialize
 
-  # Disable embedded PostgreSQL
+  # Disable embedded PostgreSQL, use H2 instead
   set {
     name  = "postgresql.enabled"
     value = "false"
   }
 
-  # H2 Database settings
+  # H2 Database configuration (embedded, file-based)
   set {
     name  = "sonarProperties.sonar\\.jdbc\\.url"
     value = "jdbc:h2:file:/opt/sonarqube/data/h2;DB_CLOSE_ON_EXIT=-1"
@@ -236,7 +307,7 @@ resource "helm_release" "sonarqube" {
     value = "sonar"
   }
 
-  # Web context for reverse proxy
+  # Web context for reverse proxy access
   set {
     name  = "sonarProperties.sonar\\.web\\.context"
     value = "/sonarqube"
@@ -253,13 +324,13 @@ resource "helm_release" "sonarqube" {
     value = "9000"
   }
 
-  # Community edition
+  # Community edition (free)
   set {
     name  = "edition"
     value = "community"
   }
 
-  # Resources - optimized for t3.medium
+  # Resource allocation optimized for t3.medium nodes
   set {
     name  = "resources.requests.cpu"
     value = "500m"
@@ -312,7 +383,7 @@ resource "helm_release" "sonarqube" {
     value = "false"
   }
 
-  # Probes configuration
+  # Liveness probe configuration
   set {
     name  = "livenessProbe.initialDelaySeconds"
     value = "180"
@@ -323,6 +394,7 @@ resource "helm_release" "sonarqube" {
     value = "30"
   }
 
+  # Readiness probe configuration
   set {
     name  = "readinessProbe.initialDelaySeconds"
     value = "180"
@@ -333,6 +405,7 @@ resource "helm_release" "sonarqube" {
     value = "30"
   }
 
+  # Startup probe configuration
   set {
     name  = "startupProbe.initialDelaySeconds"
     value = "120"
@@ -365,9 +438,13 @@ resource "helm_release" "sonarqube" {
     value = "5Gi"
   }
 
-  depends_on = [helm_release.argocd, time_sleep.wait_argocd]
+  depends_on = [
+    helm_release.argocd,
+    time_sleep.wait_argocd
+  ]
 }
 
+# Wait for SonarQube initial startup
 resource "time_sleep" "wait_sonarqube" {
   create_duration = "30s"
   depends_on      = [helm_release.sonarqube]

@@ -1,3 +1,6 @@
+# =============================================================================
+# Terraform Version and Provider Requirements
+# =============================================================================
 terraform {
   required_version = ">= 1.5.0"
 
@@ -26,10 +29,15 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.9"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 
   # ========================================
-  # CONFIGURE YOUR S3 BUCKET HERE
+  # S3 Backend Configuration
+  # Configure your S3 bucket name here
   # ========================================
   backend "s3" {
     bucket = "backend-s3-final-project"

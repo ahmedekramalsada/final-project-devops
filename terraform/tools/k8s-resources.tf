@@ -1,12 +1,43 @@
 # =============================================================================
-# TargetGroupBinding for NGINX Ingress
-# NOTE: This requires AWS LB Controller to be fully running
+# TargetGroupBinding for NGINX Ingress Controller
 # =============================================================================
-resource "time_sleep" "wait_lb_controller_ready" {
-  create_duration = "120s"
-  depends_on      = [helm_release.aws_load_balancer_controller, time_sleep.wait_lb_controller]
+# This binds the NLB target group to the NGINX ingress service
+# CRITICAL: AWS LB Controller must be fully operational with working IRSA
+# =============================================================================
+
+# Additional wait for AWS LB Controller webhook to be fully operational
+# The webhook needs time to register with the Kubernetes API server
+resource "time_sleep" "wait_lb_controller_webhook" {
+  create_duration = "60s"
+  depends_on      = [time_sleep.wait_lb_controller]
 }
 
+# Verify LB Controller is ready before creating TargetGroupBinding
+resource "null_resource" "verify_lb_controller" {
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      echo "Waiting for AWS Load Balancer Controller webhook to be ready..."
+      for i in {1..30}; do
+        if kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Running"; then
+          echo "LB Controller pod is running"
+          break
+        fi
+        echo "Waiting for LB Controller pod... ($i/30)"
+        sleep 5
+      done
+      sleep 30
+      echo "LB Controller should be ready now"
+    EOT
+  }
+
+  depends_on = [
+    helm_release.aws_load_balancer_controller,
+    time_sleep.wait_lb_controller_webhook
+  ]
+}
+
+# TargetGroupBinding for NGINX - connects NLB to nginx service
 resource "kubectl_manifest" "nginx_tgb" {
   yaml_body = yamlencode({
     apiVersion = "elbv2.k8s.aws/v1beta1"
@@ -14,6 +45,9 @@ resource "kubectl_manifest" "nginx_tgb" {
     metadata = {
       name      = "nginx-tgb"
       namespace = "ingress-nginx"
+      annotations = {
+        "elbv2.k8s.aws/target-group-ownership" = "owned"
+      }
     }
     spec = {
       serviceRef = {
@@ -22,6 +56,19 @@ resource "kubectl_manifest" "nginx_tgb" {
       }
       targetGroupARN = data.terraform_remote_state.infrastructure.outputs.nlb_target_group_arn
       targetType     = "ip"
+      networking = {
+        ingress = [{
+          from = [{
+            securityGroup = {
+              groupID = data.terraform_remote_state.infrastructure.outputs.node_security_group_id
+            }
+          }]
+          ports = [{
+            port     = 80
+            protocol = "TCP"
+          }]
+        }]
+      }
     }
   })
 
@@ -29,7 +76,9 @@ resource "kubectl_manifest" "nginx_tgb" {
     helm_release.nginx,
     helm_release.aws_load_balancer_controller,
     time_sleep.wait_nginx,
-    time_sleep.wait_lb_controller_ready
+    time_sleep.wait_lb_controller_webhook,
+    null_resource.verify_lb_controller,
+    kubernetes_service_account.lb_controller
   ]
 }
 
@@ -42,7 +91,7 @@ data "vault_kv_secret_v2" "nexus" {
 }
 
 # =============================================================================
-# Nexus Docker registry secret for pulling images
+# Nexus Docker Registry Secret for Image Pulling
 # =============================================================================
 resource "kubernetes_secret" "nexus_registry" {
   metadata {
@@ -79,6 +128,8 @@ resource "kubectl_manifest" "argocd_ingress" {
         nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
         nginx.ingress.kubernetes.io/rewrite-target: /$2
         nginx.ingress.kubernetes.io/use-regex: "true"
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     spec:
       ingressClassName: nginx
       rules:
@@ -114,6 +165,9 @@ resource "kubectl_manifest" "sonarqube_ingress" {
         nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
         nginx.ingress.kubernetes.io/rewrite-target: /sonarqube/$2
         nginx.ingress.kubernetes.io/use-regex: "true"
+        nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     spec:
       ingressClassName: nginx
       rules:

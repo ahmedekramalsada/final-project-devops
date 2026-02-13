@@ -1,3 +1,7 @@
+# =============================================================================
+# Infrastructure Pipeline - Creates VPC, EKS, NLB, API Gateway, Cognito
+# =============================================================================
+
 trigger:
   paths:
     include:
@@ -24,10 +28,21 @@ parameters:
       - destroy
 
 steps:
+  # Step 1: Install kubectl for EKS access
+  - script: |
+      echo "Installing kubectl..."
+      curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      chmod +x kubectl
+      sudo mv kubectl /usr/local/bin/
+      kubectl version --client
+    displayName: 'Install kubectl'
+
+  # Step 2: Install Terraform
   - task: TerraformInstaller@1
     inputs:
       terraformVersion: '1.5.7'
 
+  # Step 3: Terraform Init
   - task: TerraformTaskV4@4
     displayName: 'Terraform Init'
     inputs:
@@ -39,6 +54,7 @@ steps:
       backendAWSKey: 'infra/terraform.tfstate'
       backendAWSRegion: 'us-east-1'
 
+  # Step 4: Terraform Validate
   - task: TerraformTaskV4@4
     displayName: 'Terraform Validate'
     inputs:
@@ -47,15 +63,21 @@ steps:
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
       environmentServiceNameAWS: 'aws-terraform-connection'
 
+  # Step 5: Pre-destroy cleanup (only for destroy action)
   - ${{ if eq(parameters.action, 'destroy') }}:
     - script: |
+        echo "Configuring kubectl..."
         aws eks update-kubeconfig --name devops-cluster --region us-east-1 || true
-        kubectl delete ingress --all-namespaces --all --timeout=60s || true
-        kubectl delete targetgroupbindings -A --all --timeout=60s || true
+        echo "Cleaning up Kubernetes resources..."
+        kubectl delete ingress --all-namespaces --all --timeout=120s || true
+        kubectl delete targetgroupbindings -A --all --timeout=120s || true
         kubectl delete secret app-secrets -n default --ignore-not-found=true || true
         kubectl delete secret nexus-registry-secret -n default --ignore-not-found=true || true
+        echo "Waiting for resources to be cleaned up..."
+        sleep 30
       displayName: 'Pre-destroy Cleanup'
 
+  # Step 6: Terraform Apply or Destroy
   - task: TerraformTaskV4@4
     displayName: 'Terraform ${{ parameters.action }}'
     inputs:
@@ -64,3 +86,10 @@ steps:
       workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/infrastructure'
       commandOptions: '-auto-approve -var="vault_address=$(vault-address)" -var="vault_token=$(vault-token)"'
       environmentServiceNameAWS: 'aws-terraform-connection'
+
+  # Step 7: Output cluster information (only for apply)
+  - ${{ if eq(parameters.action, 'apply') }}:
+    - script: |
+        echo "=== Cluster Information ==="
+        aws eks describe-cluster --name devops-cluster --region us-east-1 --query 'cluster.{Endpoint:endpoint,OIDC:identity.oidc.issuer}' || true
+      displayName: 'Display Cluster Info'

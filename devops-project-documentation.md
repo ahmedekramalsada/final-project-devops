@@ -20,7 +20,7 @@ This document contains all the important information for setting up and managing
 ### Project Pipelines
 
 1. **Infrastructure Pipeline**: VPC, EKS, NLB, API Gateway, Cognito
-2. **Tools Pipeline**: NGINX Ingress, ArgoCD, SonarQube
+2. **Tools Pipeline**: NGINX Ingress, ArgoCD, SonarQube, AWS LB Controller
 3. **Application Pipeline**: Build, scan, push to Nexus, deploy via ArgoCD
 
 ---
@@ -108,6 +108,56 @@ resource "aws_cognito_user_pool_domain" "main" {
   user_pool_id = aws_cognito_user_pool.main.id
 }
 ```
+
+### 6. IRSA (IAM Roles for Service Accounts) Error - CRITICAL FIX
+
+**Error:**
+```
+WebIdentityErr: failed to retrieve credentials
+caused by: AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+**Root Causes:**
+1. Incorrect Helm annotation format for service account
+2. Missing IAM propagation wait time
+3. TargetGroupBinding created before webhook ready
+
+**Solution Applied:**
+
+1. **Pre-create Service Account with Annotation:**
+```hcl
+resource "kubernetes_service_account" "lb_controller" {
+  metadata {
+    name      = "aws-load-balancer-controller"
+    namespace = "kube-system"
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.lb_controller.arn
+    }
+  }
+}
+```
+
+2. **Tell Helm NOT to Create Service Account:**
+```hcl
+set {
+  name  = "serviceAccount.create"
+  value = "false"
+}
+set {
+  name  = "serviceAccount.name"
+  value = "aws-load-balancer-controller"
+}
+```
+
+3. **Add IAM Propagation Wait:**
+```hcl
+resource "time_sleep" "wait_iam_propagation" {
+  create_duration = "30s"
+  depends_on      = [kubernetes_service_account.lb_controller]
+}
+```
+
+See `docs/IRSA-TROUBLESHOOTING.md` for detailed verification steps.
 
 ---
 
@@ -244,6 +294,16 @@ After your infrastructure is deployed, note these endpoints:
    - Verify correct Client ID is being used
    - Ensure token is in correct format for Authorization header
 
+5. **IRSA / WebIdentity error**
+   - See `docs/IRSA-TROUBLESHOOTING.md` for detailed steps
+   - Verify service account has correct annotation
+   - Check IAM role trust policy matches OIDC provider
+
+6. **TargetGroupBinding fails to create**
+   - Ensure AWS LB Controller pod is running
+   - Verify service account can assume IAM role
+   - Check controller logs: `kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller`
+
 ---
 
 ## Quick Reference Commands
@@ -263,16 +323,33 @@ aws cognito-idp admin-delete-user --user-pool-id <POOL_ID> --username admin@devo
 
 # Refresh Token
 aws cognito-idp initiate-auth --auth-flow REFRESH_TOKEN_AUTH --client-id <CLIENT_ID> --auth-parameters REFRESH_TOKEN=<REFRESH_TOKEN> --region us-east-1
+
+# Check AWS LB Controller Service Account
+kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
+
+# Check AWS LB Controller Logs
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=100
+
+# Check TargetGroupBindings
+kubectl get targetgroupbindings -A
 ```
 
 ---
 
-## Current Project Status
+## Deployment Order
 
-- Infrastructure pipeline is running (applying IAM)
-- Next: Create Cognito user after pipeline completes
-- Then: Deploy Tools pipeline (NGINX Ingress, ArgoCD, SonarQube)
-- Finally: Deploy Application pipeline
+1. **First**: Run Infrastructure Pipeline
+   - Creates VPC, EKS, NLB, API Gateway, Cognito
+
+2. **Second**: Create Cognito User (manual)
+   - See instructions above
+
+3. **Third**: Run Tools Pipeline
+   - Deploys AWS LB Controller, NGINX, ArgoCD, SonarQube
+   - Creates TargetGroupBinding for NLB
+
+4. **Fourth**: Run Application Pipeline
+   - Builds and deploys the sample application
 
 ---
 
