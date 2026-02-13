@@ -2,7 +2,7 @@
 # AWS Load Balancer Controller - MUST be installed FIRST
 # =============================================================================
 resource "time_sleep" "wait_for_eks" {
-  create_duration = "90s"
+  create_duration = "120s"
 }
 
 resource "helm_release" "aws_load_balancer_controller" {
@@ -29,12 +29,19 @@ resource "helm_release" "aws_load_balancer_controller" {
     value = "aws-load-balancer-controller"
   }
 
+  # Correct annotation format for EKS Pod Identity
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
     value = local.lb_controller_role_arn
   }
 
   depends_on = [time_sleep.wait_for_eks]
+}
+
+# Wait for AWS LB Controller to be fully ready
+resource "time_sleep" "wait_lb_controller" {
+  create_duration = "60s"
+  depends_on      = [helm_release.aws_load_balancer_controller]
 }
 
 # =============================================================================
@@ -81,7 +88,7 @@ resource "helm_release" "nginx" {
     value = "512Mi"
   }
 
-  depends_on = [helm_release.aws_load_balancer_controller]
+  depends_on = [helm_release.aws_load_balancer_controller, time_sleep.wait_lb_controller]
 }
 
 resource "time_sleep" "wait_nginx" {

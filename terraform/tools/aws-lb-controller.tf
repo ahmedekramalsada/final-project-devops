@@ -2,9 +2,16 @@
 # IAM Role for AWS Load Balancer Controller
 # =============================================================================
 
-# Get OIDC provider URL for trust policy
+# Get EKS cluster info for OIDC
+data "aws_eks_cluster" "cluster" {
+  name = data.terraform_remote_state.infrastructure.outputs.cluster_name
+}
+
+# Extract OIDC provider URL correctly
 locals {
-  oidc_provider_url = replace(data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn, "arn:aws:iam::", "")
+  # OIDC issuer URL from EKS cluster: https://oidc.eks.region.amazonaws.com/id/XXXXX
+  # We need: oidc.eks.region.amazonaws.com/id/XXXXX (without https://)
+  oidc_provider_url = replace(data.aws_eks_cluster.cluster.identity[0].oidc[0].issuer, "https://", "")
   oidc_provider_arn = data.terraform_remote_state.infrastructure.outputs.oidc_provider_arn
 }
 
@@ -33,16 +40,16 @@ data "aws_iam_policy_document" "lb_controller_assume" {
   }
 }
 
-# Create IAM Policy with unique name
+# Create IAM Policy
 resource "aws_iam_policy" "lb_controller" {
-  name        = "${var.project_name}-lb-controller-v2"
+  name        = "${var.project_name}-lb-controller-v3"
   description = "IAM policy for AWS Load Balancer Controller"
   policy      = file("${path.module}/iam_policy.json")
 }
 
-# Create IAM Role with unique name
+# Create IAM Role
 resource "aws_iam_role" "lb_controller" {
-  name                  = "${var.project_name}-lb-controller-v2"
+  name                  = "${var.project_name}-lb-controller-v3"
   assume_role_policy    = data.aws_iam_policy_document.lb_controller_assume.json
   force_detach_policies = true
 }

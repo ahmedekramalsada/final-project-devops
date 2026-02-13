@@ -1,6 +1,12 @@
 # =============================================================================
 # TargetGroupBinding for NGINX Ingress
+# NOTE: This requires AWS LB Controller to be fully running
 # =============================================================================
+resource "time_sleep" "wait_lb_controller_ready" {
+  create_duration = "120s"
+  depends_on      = [helm_release.aws_load_balancer_controller, time_sleep.wait_lb_controller]
+}
+
 resource "kubectl_manifest" "nginx_tgb" {
   yaml_body = yamlencode({
     apiVersion = "elbv2.k8s.aws/v1beta1"
@@ -22,7 +28,8 @@ resource "kubectl_manifest" "nginx_tgb" {
   depends_on = [
     helm_release.nginx,
     helm_release.aws_load_balancer_controller,
-    time_sleep.wait_nginx
+    time_sleep.wait_nginx,
+    time_sleep.wait_lb_controller_ready
   ]
 }
 
