@@ -28,6 +28,8 @@ variables:
     value: "http://18.215.161.128:8081"
   - name: GIT_REPO_URL
     value: "https://github.com/ahmedekramalsada/final-project-devops.git"
+  - name: AWS_REGION
+    value: "us-east-1"
 
 stages:
   - stage: DeployTools
@@ -37,13 +39,13 @@ stages:
         displayName: "Deploy Tools"
         timeoutInMinutes: 120
         steps:
-          # Step 1: Install required tools
+          # Step 1: Install kubectl
           - script: |
               echo "Installing kubectl..."
               curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
               chmod +x kubectl
               sudo mv kubectl /usr/local/bin/
-              kubectl version --client
+              kubectl version --client --output yaml
             displayName: "Install kubectl"
 
           # Step 2: Install Terraform
@@ -52,17 +54,7 @@ stages:
             inputs:
               terraformVersion: "1.5.7"
 
-          # Step 3: Configure kubectl access to EKS
-          - script: |
-              echo "Configuring kubectl access to EKS cluster..."
-              aws eks update-kubeconfig --name devops-cluster --region us-east-1
-              kubectl cluster-info
-            displayName: "Configure kubectl for EKS"
-            env:
-              AWS_ACCESS_KEY_ID: $(aws-access-key-id)
-              AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
-
-          # Step 4: Initialize Terraform with S3 Backend
+          # Step 3: Initialize Terraform with S3 Backend
           - task: TerraformTaskV4@4
             displayName: "Terraform Init"
             inputs:
@@ -74,7 +66,7 @@ stages:
               backendAWSKey: "tools/terraform.tfstate"
               backendAWSRegion: "us-east-1"
 
-          # Step 5: Terraform Validate
+          # Step 4: Terraform Validate
           - task: TerraformTaskV4@4
             displayName: "Terraform Validate"
             inputs:
@@ -82,7 +74,7 @@ stages:
               command: "validate"
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
 
-          # Step 6: Terraform Plan
+          # Step 5: Terraform Plan
           - task: TerraformTaskV4@4
             displayName: "Terraform Plan"
             inputs:
@@ -99,7 +91,7 @@ stages:
                 -out=tfplan
               environmentServiceNameAWS: "aws-terraform-connection"
 
-          # Step 7: Terraform Apply
+          # Step 6: Terraform Apply
           - task: TerraformTaskV4@4
             displayName: "Terraform Apply"
             inputs:
@@ -109,37 +101,49 @@ stages:
               commandOptions: "tfplan"
               environmentServiceNameAWS: "aws-terraform-connection"
 
-          # Step 8: Verify LB Controller Service Account
+          # Step 7: Configure kubectl and verify deployment
+          # Uses AWS credentials from the service connection via env vars
           - script: |
-              echo "Verifying AWS Load Balancer Controller service account annotation..."
-              kubectl get serviceaccount aws-load-balancer-controller -n kube-system -o yaml
+              echo "Configuring kubectl access to EKS cluster..."
+              aws eks update-kubeconfig --name devops-cluster --region us-east-1
               echo ""
-              echo "Checking for IAM role annotation..."
-              kubectl get serviceaccount aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+              echo "Testing cluster connection..."
+              kubectl cluster-info
               echo ""
-            displayName: "Verify LB Controller SA"
-            condition: always()
+              echo "=== Verifying AWS Load Balancer Controller ==="
+              kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller || echo "LB Controller pods not yet ready"
+              echo ""
+              echo "=== Checking Service Account Annotation ==="
+              kubectl get serviceaccount aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' || echo "SA not found"
+              echo ""
+            displayName: "Configure kubectl and Verify"
+            env:
+              AWS_ACCESS_KEY_ID: $(aws-access-key-id)
+              AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
+              AWS_DEFAULT_REGION: "us-east-1"
+            condition: succeededOrFailed()
 
-          # Step 9: Check pod status
+          # Step 8: Check all pod status
           - script: |
-              echo "=== Checking AWS Load Balancer Controller ==="
-              kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller || true
+              echo "=== All Pods Status ==="
+              kubectl get pods -A || true
               echo ""
-              echo "=== Checking NGINX Ingress ==="
+              echo "=== NGINX Ingress ==="
               kubectl get pods -n ingress-nginx || true
               echo ""
-              echo "=== Checking ArgoCD ==="
+              echo "=== ArgoCD ==="
               kubectl get pods -n argocd || true
               echo ""
-              echo "=== Checking SonarQube ==="
+              echo "=== SonarQube ==="
               kubectl get pods -n tooling || true
-              echo ""
-              echo "=== All Namespaces ==="
-              kubectl get pods -A || true
             displayName: "Check Pod Status"
+            env:
+              AWS_ACCESS_KEY_ID: $(aws-access-key-id)
+              AWS_SECRET_ACCESS_KEY: $(aws-secret-access-key)
+              AWS_DEFAULT_REGION: "us-east-1"
             condition: always()
 
-          # Step 10: Terraform Output
+          # Step 9: Terraform Output
           - task: TerraformTaskV4@4
             displayName: "Terraform Output"
             inputs:
