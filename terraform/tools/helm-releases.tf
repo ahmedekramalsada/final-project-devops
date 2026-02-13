@@ -31,13 +31,10 @@ resource "helm_release" "aws_load_balancer_controller" {
 
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.lb_controller.arn
+    value = local.lb_controller_role_arn
   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.lb_controller,
-    time_sleep.wait_for_eks
-  ]
+  depends_on = [time_sleep.wait_for_eks]
 }
 
 # =============================================================================

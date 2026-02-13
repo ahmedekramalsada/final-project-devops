@@ -33,7 +33,7 @@ stages:
     jobs:
       - job: DeployTools
         displayName: "Deploy Tools"
-        timeoutInMinutes: 90  # Increase timeout to 90 minutes
+        timeoutInMinutes: 90
         steps:
           # Step 1: Install Terraform
           - task: TerraformInstaller@1
@@ -61,7 +61,7 @@ stages:
               command: "validate"
               workingDirectory: "$(System.DefaultWorkingDirectory)/terraform/tools"
 
-          # Step 4: Terraform Plan
+          # Step 4: Terraform Plan - Use existing IAM resources
           - task: TerraformTaskV4@4
             displayName: "Terraform Plan"
             inputs:
@@ -75,6 +75,7 @@ stages:
                 -var="vault_token=$(vault-token)"
                 -var="nexus_url=$(NEXUS_URL)"
                 -var="git_repo_url=$(GIT_REPO_URL)"
+                -var="create_lb_controller_iam=false"
                 -out=tfplan
               environmentServiceNameAWS: "aws-terraform-connection"
 
